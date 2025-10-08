@@ -127,7 +127,11 @@ def convert_sdf_voxels_to_mesh(pytorch_3d_sdf_tensor):
     numpy_3d_sdf_tensor = pytorch_3d_sdf_tensor.cpu().detach().numpy()
     voxels_dim = numpy_3d_sdf_tensor.shape[0]
     voxel_size = 2.0 / (voxels_dim - 1)
-    verts, faces, normals, values = measure.marching_cubes_lewiner(
+    # << ak251007_PyTorch2
+    # "marching_cubes_lewiner" is depricated and replaced with "marching_cubes"
+    #verts, faces, normals, values = measure.marching_cubes_lewiner(
+    verts, faces, normals, values = measure.marching_cubes(
+    #   ak251007_PyTorch2 >>
         numpy_3d_sdf_tensor, level=0.0, spacing=[voxel_size] * 3
     )
     # transform from voxel coordinates to camera coordinates
