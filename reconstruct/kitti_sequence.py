@@ -22,6 +22,16 @@ import torch
 from reconstruct.loss_utils import get_rays, get_time
 from reconstruct.utils import ForceKeyErrorDict, read_calib_file, load_velo_scan
 from reconstruct import get_detectors
+import open3d as o3d
+
+# << ak251007_PyTorch2
+# TODO: review and remove legacy MMLab V1 support after full testing is complete.
+import mmcv
+from packaging.version import parse as parse_version
+
+# MMLab V1 vs V2 API compatibility check
+IS_MMCV_V2 = parse_version(mmcv.__version__) >= parse_version('2.0.0')
+# ak251007_PyTorch2 >>
 
 
 class FrameWithLiDAR:
@@ -67,6 +77,107 @@ class FrameWithLiDAR:
 
         return velo_pts_cam_fov, colors_fov
 
+    def visualize_2d_masks(self, det_2d=None, out_file=None, show_window=False):
+            """
+            Overlay 2D masks and boxes on the image.
+            - out_file: If provided, the image is saved to this path.
+            - show_window: If True, the image is displayed in an interactive window.
+            """
+            if det_2d is None:
+                det_2d = self.detector_2d.make_prediction(self.img_bgr)
+
+            masks = det_2d.get("pred_masks", np.zeros((0, 0, 0)))
+            boxes = det_2d.get("pred_boxes", np.zeros((0, 4)))
+            
+            # --- ADDED LINE TO PRINT MASK COUNT ---
+            print(f"Number of 2D masks detected: {masks.shape[0]}")
+
+            vis_img = self.img_bgr.copy()
+            n = masks.shape[0]
+            # generate deterministic colors
+            rng = np.random.RandomState(0)
+            colors = (rng.randint(50, 230, size=(max(1, n), 3))).astype(np.uint8)
+
+            for i in range(n):
+                mask = masks[i].astype(np.bool_)
+                color = tuple(int(c) for c in colors[i % colors.shape[0]])
+                colored_mask = np.zeros_like(vis_img, dtype=np.uint8)
+                colored_mask[mask] = color
+                vis_img = cv2.addWeighted(vis_img, 1.0, colored_mask, 0.5, 0)
+                # draw contour
+                mask_uint8 = (mask.astype(np.uint8) * 255)
+                contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(vis_img, contours, -1, (255, 255, 255), 1)
+                # draw bbox if available
+                if i < boxes.shape[0]:
+                    x1, y1, x2, y2 = boxes[i].astype(np.int32)
+                    cv2.rectangle(vis_img, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(vis_img, f"id:{i}", (x1, max(0, y1-6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+            if show_window:
+                window_name = f"2D Masks - Frame {self.frame_id}"
+                cv2.imshow(window_name, vis_img)
+                print(f"Displaying 2D masks for frame {self.frame_id}. Press ESC or close the window to continue...")
+                while cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                    key = cv2.waitKey(1)
+                    if key == 27:  # 27 is the ASCII code for the ESC key
+                        break
+                cv2.destroyAllWindows()
+                
+            if out_file:
+                cv2.imwrite(out_file, vis_img)
+                
+            return vis_img
+
+    def visualize_3d_boxes(self, boxes_3d, show_window=False):
+        """
+        Visualize 3D bounding boxes on the LiDAR point cloud.
+        - boxes_3d: A numpy array of shape (N, 7) with format [x, y, z, w, l, h, yaw].
+        - show_window: If True, an Open3D window is opened.
+        """
+        if not show_window:
+            return
+
+        # Make a copy to avoid modifying the original array passed by reference.
+        boxes_3d_vis = boxes_3d.copy()
+
+        print(f"Visualizing {boxes_3d_vis.shape[0]} 3D bounding boxes...")
+
+        # Create Open3D point cloud object
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.velo_pts[:, :3])
+        pcd.paint_uniform_color([0.5, 0.5, 0.5]) # Set point cloud color to grey
+
+        # Create a list of Open3D bounding box objects
+        o3d_boxes = []
+        for i in range(boxes_3d_vis.shape[0]):
+            box = boxes_3d_vis[i]
+            center = box[:3]
+            # Correct for downward shift by half the height
+            center[2] += box[5] / 2.0
+            # MMDetection3D uses w, l, h, but Open3D expects extents (length, width, height)
+            # KITTI convention: x-forward, y-left, z-up.
+            # MMDetection3D box dims are (w, l, h). In LiDAR frame, l is along x, w is along y.
+            extent = [box[4], box[3], box[5]] # l, w, h
+            theta = box[6]
+
+            # Apply the same correction as in get_detections for consistent visualization
+            if IS_MMCV_V2:
+                # Compensate for the 90-degree CCW rotation from the new detector
+                theta_corrected = theta + np.pi / 2
+            else:
+                theta_corrected = theta
+            
+            # Create rotation matrix for yaw around Z-axis
+            R = o3d.geometry.get_rotation_matrix_from_xyz((0, 0, theta_corrected))
+            
+            # Create OrientedBoundingBox
+            o3d_box = o3d.geometry.OrientedBoundingBox(center, R, extent)
+            o3d_box.color = (0, 0, 1) # Blue color for boxes
+            o3d_boxes.append(o3d_box)
+
+        o3d.visualization.draw_geometries([pcd] + o3d_boxes)
+
     def pixels_sampler(self, bbox_2d, mask):
         alpha = int(self.configs.downsample_ratio)
         expand_len = 5
@@ -108,17 +219,38 @@ class FrameWithLiDAR:
         t2 = get_time()
         print("3D detector takes %f seconds" % (t2 - t1))
 
+        # Visualize 3D boxes for debugging
+        # self.visualize_3d_boxes(detections_3d, show_window=True)
+
         # sort according to depth order
         depth_order = np.argsort(detections_3d[:, 0])
         detections_3d = detections_3d[depth_order, :]
         for n in range(detections_3d.shape[0]):
             det_3d = detections_3d[n, :]
             trans, size, theta = det_3d[:3], det_3d[3:6], det_3d[6]
+            # << ak251007_PyTorch2
+            # TODO: review and remove legacy MMLab V1 support after full testing is complete.
+            if IS_MMCV_V2:
             # Get SE(3) transformation matrix from trans and theta
-            T_velo_obj = np.array([[np.cos(theta), 0, -np.sin(theta), trans[0]],
-                                   [-np.sin(theta), 0, -np.cos(theta), trans[1]],
-                                   [0, 1, 0, trans[2] + size[2] / 2],
-                                   [0, 0, 0, 1]]).astype(np.float32)
+                # Compensate for the 90-degree CCW rotation from the new detector
+                theta_corrected = theta + np.pi / 2
+                # T_velo_obj = np.array([[np.cos(theta_corrected), -np.sin(theta_corrected), 0, trans[0]],
+                #                     [np.sin(theta_corrected),  np.cos(theta_corrected), 0, trans[1]],
+                #                     [0,                        0,                       1, trans[2]],
+                #                     [0, 0, 0, 1]]).astype(np.float32)
+                T_velo_obj = np.array([[np.cos(theta_corrected), 0, -np.sin(theta_corrected), trans[0]],
+                                    [-np.sin(theta_corrected), 0, -np.cos(theta_corrected), trans[1]],
+                                    [0, 1, 0, trans[2] + size[2] / 2],
+                                    [0, 0, 0, 1]]).astype(np.float32)    
+
+            else:
+            # Legacy MMLab V1 returns a tuple of (boxes, masks)
+                T_velo_obj = np.array([[np.cos(theta), 0, -np.sin(theta), trans[0]],
+                                    [-np.sin(theta), 0, -np.cos(theta), trans[1]],
+                                    [0, 1, 0, trans[2] + size[2] / 2],
+                                    [0, 0, 0, 1]]).astype(np.float32)
+            # ak251007_PyTorch2 >>
+               
             T_obj_velo = np.linalg.inv(T_velo_obj)
             x, y, z = list(trans)
             # Filter out points that are too far away from car centroid, with radius 3.0 meters
@@ -165,6 +297,8 @@ class FrameWithLiDAR:
             det_2d = torch.load(label_path2d)
         t4 = get_time()
         print("2D detctor takes %f seconds" % (t4 - t3))
+        # Visualize 2D masks for debugging:
+        # self.visualize_2d_masks(det_2d=det_2d, show_window=True)
 
         img_h, img_w, _ = self.img_rgb.shape
         masks_2d = det_2d["pred_masks"]
@@ -173,9 +307,13 @@ class FrameWithLiDAR:
         # If no 2D detections, return right away
         if masks_2d.shape[0] == 0:
             return
-
+        
         # Occlusion masks
-        occ_mask = np.full([img_h, img_w], False, dtype=np.bool)
+        # << ak251007_PyTorch2
+        # bool can effective replace np.bool and is backward compatible.
+        # occ_mask = np.full([img_h, img_w], False, dtype=np.bool)
+        occ_mask = np.full([img_h, img_w], False, dtype=bool)
+        #    ak251007_PyTorch2 >>
         prev_mask = None
         for instance in self.instances:
             if not instance.is_front:
