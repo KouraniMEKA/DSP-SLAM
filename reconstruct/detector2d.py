@@ -30,7 +30,14 @@ except ImportError:
     import importlib_metadata as metadata
 
 # MMLab V1 vs V2 API compatibility check
-mmcv_version_str = metadata.version('mmcv')
+try:
+    # Modern, preferred method
+    mmcv_version_str = metadata.version('mmcv')
+except metadata.PackageNotFoundError:
+    # Fallback for legacy or editable installs
+    import mmcv
+    mmcv_version_str = mmcv.__version__
+
 IS_MMCV_V2 = parse_version(mmcv_version_str) >= parse_version('2.0.0')
 
 if IS_MMCV_V2:
