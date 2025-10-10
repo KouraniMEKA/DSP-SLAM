@@ -24,16 +24,6 @@ from reconstruct.utils import ForceKeyErrorDict, read_calib_file, load_velo_scan
 from reconstruct import get_detectors
 import open3d as o3d
 
-# << ak251007_PyTorch2
-# TODO: review and remove legacy MMLab V1 support after full testing is complete.
-import mmcv
-from packaging.version import parse as parse_version
-
-# MMLab V1 vs V2 API compatibility check
-IS_MMCV_V2 = parse_version(mmcv.__version__) >= parse_version('2.0.0')
-# ak251007_PyTorch2 >>
-
-
 class FrameWithLiDAR:
     def __init__(self, sequence, frame_id):
         # Load sequence properties
@@ -158,18 +148,11 @@ class FrameWithLiDAR:
             # MMDetection3D uses w, l, h, but Open3D expects extents (length, width, height)
             # KITTI convention: x-forward, y-left, z-up.
             # MMDetection3D box dims are (w, l, h). In LiDAR frame, l is along x, w is along y.
-            extent = [box[4], box[3], box[5]] # l, w, h
+            extent = [box[3], box[4], box[5]] 
             theta = box[6]
-
-            # Apply the same correction as in get_detections for consistent visualization
-            if IS_MMCV_V2:
-                # Compensate for the 90-degree CCW rotation from the new detector
-                theta_corrected = theta + np.pi / 2
-            else:
-                theta_corrected = theta
             
             # Create rotation matrix for yaw around Z-axis
-            R = o3d.geometry.get_rotation_matrix_from_xyz((0, 0, theta_corrected))
+            R = o3d.geometry.get_rotation_matrix_from_xyz((0, 0, theta))
             
             # Create OrientedBoundingBox
             o3d_box = o3d.geometry.OrientedBoundingBox(center, R, extent)
@@ -219,6 +202,21 @@ class FrameWithLiDAR:
         t2 = get_time()
         print("3D detector takes %f seconds" % (t2 - t1))
 
+        # # << ak251007_PyTorch2
+        # # --- Comprehensive 3D Detections Log ---
+        # print("\n--- 3D Detections Analysis ---")
+        # print(f"Type of detections_3d: {type(detections_3d)}")
+        # if isinstance(detections_3d, np.ndarray):
+        #     print(f"Shape of detections_3d: {detections_3d.shape}")
+        #     print(f"Data type (dtype) of detections_3d: {detections_3d.dtype}")
+        #     print(f"Number of 3D detections: {detections_3d.shape[0]}")
+        #     for i, box in enumerate(detections_3d):
+        #         print(f"  - Box {i}: [x={box[0]:.2f}, y={box[1]:.2f}, z={box[2]:.2f}, w={box[3]:.2f}, l={box[4]:.2f}, h={box[5]:.2f}, yaw={box[6]:.2f}]")
+        # else:
+        #     print(f"detections_3d is not a numpy array. Value: {detections_3d}")
+        # print("------------------------------\n")
+        # #    ak251007_PyTorch2 >>
+
         # Visualize 3D boxes for debugging
         # self.visualize_3d_boxes(detections_3d, show_window=True)
 
@@ -227,31 +225,13 @@ class FrameWithLiDAR:
         detections_3d = detections_3d[depth_order, :]
         for n in range(detections_3d.shape[0]):
             det_3d = detections_3d[n, :]
-            trans, size, theta = det_3d[:3], det_3d[3:6], det_3d[6]
-            # << ak251007_PyTorch2
-            # TODO: review and remove legacy MMLab V1 support after full testing is complete.
-            if IS_MMCV_V2:
-            # Get SE(3) transformation matrix from trans and theta
-                # Compensate for the 90-degree CCW rotation from the new detector
-                theta_corrected = theta + np.pi / 2
-                # T_velo_obj = np.array([[np.cos(theta_corrected), -np.sin(theta_corrected), 0, trans[0]],
-                #                     [np.sin(theta_corrected),  np.cos(theta_corrected), 0, trans[1]],
-                #                     [0,                        0,                       1, trans[2]],
-                #                     [0, 0, 0, 1]]).astype(np.float32)
-                T_velo_obj = np.array([[np.cos(theta_corrected), 0, -np.sin(theta_corrected), trans[0]],
-                                    [-np.sin(theta_corrected), 0, -np.cos(theta_corrected), trans[1]],
-                                    [0, 1, 0, trans[2] + size[2] / 2],
-                                    [0, 0, 0, 1]]).astype(np.float32)    
-
-            else:
-            # Legacy MMLab V1 returns a tuple of (boxes, masks)
-                T_velo_obj = np.array([[np.cos(theta), 0, -np.sin(theta), trans[0]],
-                                    [-np.sin(theta), 0, -np.cos(theta), trans[1]],
-                                    [0, 1, 0, trans[2] + size[2] / 2],
-                                    [0, 0, 0, 1]]).astype(np.float32)
-            # ak251007_PyTorch2 >>
-               
+            trans, size, theta = det_3d[:3], det_3d[3:6], det_3d[6] 
+            T_velo_obj = np.array([[np.cos(theta), 0, np.sin(theta), trans[0]],
+                                [np.sin(theta), 0, -np.cos(theta), trans[1]],
+                                [0, 1, 0, trans[2] + size[2] / 2],
+                                [0, 0, 0, 1]]).astype(np.float32)
             T_obj_velo = np.linalg.inv(T_velo_obj)
+
             x, y, z = list(trans)
             # Filter out points that are too far away from car centroid, with radius 3.0 meters
             r = 3.0
@@ -297,6 +277,31 @@ class FrameWithLiDAR:
             det_2d = torch.load(label_path2d)
         t4 = get_time()
         print("2D detctor takes %f seconds" % (t4 - t3))
+        
+        # # << ak251007_PyTorch2
+        # # --- Comprehensive 2D Detections Log ---
+        # print("\n--- 2D Detections Analysis ---")
+        # print(f"Type of det_2d: {type(det_2d)}")
+        # if isinstance(det_2d, dict):
+        #     print("det_2d is a dictionary. Analyzing keys:")
+        #     for key, value in det_2d.items():
+        #         print(f"  - Key: '{key}'")
+        #         if isinstance(value, np.ndarray):
+        #             print(f"    - Type: numpy.ndarray")
+        #             print(f"    - Shape: {value.shape}")
+        #             print(f"    - Dtype: {value.dtype}")
+        #             if key == 'pred_boxes' and value.size > 0 and value.ndim == 2 and value.shape[1] == 4:
+        #                  for i, box in enumerate(value):
+        #                      print(f"      - Box {i}: [x1={box[0]:.2f}, y1={box[1]:.2f}, x2={box[2]:.2f}, y2={box[3]:.2f}]")
+        #             elif key == 'pred_masks':
+        #                 print(f"    - Number of masks: {value.shape[0]}")
+        #         else:
+        #             print(f"    - Type: {type(value)}")
+        # else:
+        #     print(f"det_2d is not a dictionary. Value: {det_2d}")
+        # print("----------------------------\n")
+        # #    ak251007_PyTorch2 >>
+
         # Visualize 2D masks for debugging:
         # self.visualize_2d_masks(det_2d=det_2d, show_window=True)
 

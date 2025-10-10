@@ -16,13 +16,20 @@
 #
 
 import torch
-import mmcv
+
 # << ak251007_PyTorch2
 # TODO: review and remove legacy MMLab V1 API support after full testing is complete.
 from packaging.version import parse as parse_version
+try:
+    # For Python 3.8+
+    from importlib import metadata
+except ImportError:
+    # For Python < 3.8
+    import importlib_metadata as metadata
 
 # MMLab V1 vs V2 API compatibility check
-IS_MMCV_V2 = parse_version(mmcv.__version__) >= parse_version('2.0.0')
+mmcv_version_str = metadata.version('mmcv')
+IS_MMCV_V2 = parse_version(mmcv_version_str) >= parse_version('2.0.0')
 
 if IS_MMCV_V2:
     from mmengine.runner import load_checkpoint
@@ -31,6 +38,7 @@ if IS_MMCV_V2:
     from mmengine.registry import MODELS
     from mmengine import Config  
 else:
+    from mmcv import Config as MMCVConfig
     from mmcv.runner import load_checkpoint
     from mmdet3d.models import build_model
     from mmdet3d.apis import inference_detector, convert_SyncBN
@@ -54,9 +62,9 @@ class Detector3D(object):
             if IS_MMCV_V2:
                 config = Config.fromfile(config)
             else:
-                config = mmcv.Config.fromfile(config)
+                config = MMCVConfig.fromfile(config)
 
-        elif not isinstance(config, (mmcv.Config, Config if IS_MMCV_V2 else mmcv.Config)):
+        elif not isinstance(config, (MMCVConfig, Config if IS_MMCV_V2 else MMCVConfig)):
         # ak251007_PyTorch2 >>
             raise TypeError('config must be a filename or Config object, '
                             f'but got {type(config)}')
@@ -142,12 +150,22 @@ class Detector3D(object):
             labels = pred_instances.labels_3d
             scores = pred_instances.scores_3d
             boxes = pred_instances.bboxes_3d.tensor
+
+            # Normalize the output format to [x, y, z, w, l, h, yaw]
+            # This encapsulates the version-specific logic within the detector.
+            # Input format is [x, y, z, l, w, h, yaw]
+            # Swap l and w to get [x, y, z, w, l, h, yaw]
+            boxes[:, [3, 4]] = boxes[:, [4, 3]]
+            boxes[:, 6] = boxes[:, 6] - (torch.pi / 2)
         else:
             # Legacy MMLab V1 returns a tuple of (predictions, data)
             predictions, data = inference_detector(self.model, velo_file)
             labels = predictions[0]["labels_3d"]
             scores = predictions[0]["scores_3d"]
             boxes = predictions[0]["boxes_3d"].tensor
+            # Input format is [x, y, z, w, l, h, yaw]
+            # Correct the yaw angle (# ak251007 reverse theta sign here instead from inside T_velo_obj computation)
+            boxes[:, 6] = -boxes[:, 6]
         # ak251007_PyTorch2 >>
 
         # Car's label is 0 in KITTI dataset
