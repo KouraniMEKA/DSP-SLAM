@@ -18,14 +18,20 @@
 import warnings
 import cv2
 import torch
-import numpy as np
-import mmcv
+import numpy as np 
 # << ak251007_PyTorch2
 # TODO: review and remove legacy MMLab V1 support after full testing is complete.
 from packaging.version import parse as parse_version
+try:
+    # For Python 3.8+
+    from importlib import metadata
+except ImportError:
+    # For Python < 3.8
+    import importlib_metadata as metadata
 
 # MMLab V1 vs V2 API compatibility check
-IS_MMCV_V2 = parse_version(mmcv.__version__) >= parse_version('2.0.0')
+mmcv_version_str = metadata.version('mmcv')
+IS_MMCV_V2 = parse_version(mmcv_version_str) >= parse_version('2.0.0')
 
 if IS_MMCV_V2:
     from mmengine.runner import load_checkpoint
@@ -36,6 +42,7 @@ if IS_MMCV_V2:
     from mmengine.dataset import Compose
     from mmdet.apis import inference_detector as legacy_inference_detector # Keep old name for else block
 else:
+    from mmcv import Config as MMCVConfig
     from mmcv.runner import load_checkpoint
     from mmdet.models import build_detector
     from mmdet.core import get_classes
@@ -60,11 +67,11 @@ class Detector2D(object):
         if isinstance(config, str):
         # << ak251007_PyTorch2
             if IS_MMCV_V2:
-                config = Config.fromfile(config)
+                self.config = Config.fromfile(config)
             else:
-                config = mmcv.Config.fromfile(config)
+                self.config = MMCVConfig.fromfile(config)
 
-        elif not isinstance(config, (mmcv.Config, Config if IS_MMCV_V2 else mmcv.Config)):
+        elif not isinstance(config, (MMCVConfig, Config if IS_MMCV_V2 else MMCVConfig)):
         # ak251007_PyTorch2 >>
             raise TypeError('config must be a filename or Config object, '
                             f'but got {type(config)}')
@@ -79,13 +86,13 @@ class Detector2D(object):
 
             # MMLab V2+ models do not accept 'pretrained' argument.
             # We must remove it from the config dictionary before building the model.
-            if 'pretrained' in config.model:
-                del config.model['pretrained']
-            config.model.train_cfg = None
+            if 'pretrained' in self.config.model:
+                del self.config.model['pretrained']
+            self.config.model.train_cfg = None
 
             # Manually replicate the legacy initialization steps using the new API
             # 1. Build the model
-            self.model = MODELS.build(config.model)
+            self.model = MODELS.build(self.config.model)
 
             # 2. Load the checkpoint
             if checkpoint is not None:
@@ -96,7 +103,7 @@ class Detector2D(object):
             # Since we are passing an already-loaded image (np.ndarray), we replace
             # it with a dummy transform that does nothing but ensures the pipeline
             # starts correctly.
-            test_pipeline = config.test_dataloader.dataset.pipeline
+            test_pipeline = self.config.test_dataloader.dataset.pipeline
             # Replace 'LoadImageFromFile' with a dummy identity transform
             if test_pipeline[0]['type'] == 'LoadImageFromFile':
                 test_pipeline = test_pipeline[1:]
@@ -104,10 +111,10 @@ class Detector2D(object):
 
         else:
             # Legacy MMLab V1 requires these keys to be explicitly set.
-            config.model.pretrained = None
-            config.model.train_cfg = None
+            self.config.model.pretrained = None
+            self.config.model.train_cfg = None
             
-            self.model = build_detector(config.model, test_cfg=config.get('test_cfg'))
+            self.model = build_detector(self.config.model, test_cfg=self.config.get('test_cfg'))
 
             if checkpoint is not None:
                 checkpoint_data = load_checkpoint(self.model, checkpoint, map_location='cpu')
@@ -117,9 +124,9 @@ class Detector2D(object):
                     warnings.simplefilter('once')
                     warnings.warn('Class names are not saved in the checkpoint\'s '
                                 'meta data, use COCO classes by default.')
-                    self.model.CLASSES = get_classes('coco')
+                    self.model.CLASSES = get_classes('coco') 
 
-        self.model.cfg = config  # save the config in the model for convenience
+        self.model.cfg = self.config  # save the config in the model for convenience
         # 3. Move model to the correct device
         # self.model.to(device)
         self.model.to(self.device)
