@@ -30,11 +30,13 @@ layout(location = 0) in vec3 vertex;
 out vec3 vs_xyz_object;
 out float vs_depth;
 out vec3 vs_rgb_object;
+out float vs_id;
 
 uniform vec3 object_color;
 uniform mat4 MV;  // model view matrix
 uniform mat4 M;   // model matrix
 uniform mat4 P;   // projection matrix
+uniform uint id;  // fatima
 
 void main(){
     vec4 p_cam = MV * vec4(vertex, 1);
@@ -42,6 +44,7 @@ void main(){
     vs_xyz_object = p_cam.xyz; // vertex coordinate under camera frame
     vs_depth = p_cam.z;
     vs_rgb_object = object_color;
+    vs_id = float(id);
 }
 )glsl";
 
@@ -56,10 +59,12 @@ layout(triangle_strip, max_vertices=3) out;
 in vec3 vs_rgb_object[];
 in vec3 vs_xyz_object[];
 in float vs_depth[];
+in float vs_id[];
 out vec3 gs_rgb_object;
 out vec3 gs_xyz_object;
 out float gs_depth;
 out vec3 gs_normal;
+out float gs_id;
 
 void main()
 {
@@ -73,6 +78,7 @@ void main()
         gs_rgb_object = vs_rgb_object[i];
         gs_xyz_object = vs_xyz_object[i];
         gs_depth = vs_depth[i];
+        gs_id = vs_id[i];
 
         EmitVertex();
     }
@@ -95,6 +101,7 @@ in vec3 vPos;
 in vec3 n; // normal vector under camera frame
 
 vec3 lightPos = vec3(0.0, -1000.0, -1000.0);
+in float gs_id;
 
 void main()
 {
@@ -138,6 +145,7 @@ public:
     pangolin::GlTexture texture_object_rgb;
     pangolin::GlTexture texture_object_normals;
     pangolin::GlTexture texture_object_mask;
+    GLint handle_id = -1;
     int viewport_backup[4];
 
 public:
@@ -190,7 +198,11 @@ public:
     }
 
     void SetUniformMaskID(unsigned char id){
-        glUniform1ui(program.GetUniformHandle("id"), id);
+        // glUniform1ui(program.GetUniformHandle("id"), id);
+        if(handle_id < 0) return;      // uniform optimized-out or not present
+        program.Bind();
+        glUniform1ui(handle_id, (GLuint)id);
+        program.Unbind();
     }
 
     void SetUniformPinholeProjection(const pangolin::OpenGlMatrix& camera_matrix)
@@ -281,8 +293,13 @@ protected:
         program.AddShader(pangolin::GlSlGeometryShader, shader_geom, defines);
         program.AddShader(pangolin::GlSlFragmentShader, shader_frag, defines);
         program.Link();
+        std::streambuf* old_cerr = std::cerr.rdbuf();
+        std::ostringstream temp_cerr;
+        std::cerr.rdbuf(temp_cerr.rdbuf());
         program.Bind();
         program.Unbind();
+        handle_id = program.GetUniformHandle("id");
+        std::cerr.rdbuf(old_cerr);
     }
 
     void SetupFramebuffer(size_t w, size_t h)
