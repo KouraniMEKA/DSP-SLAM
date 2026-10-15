@@ -100,7 +100,7 @@ int main(int argc, char **argv)
 
     SLAM.SaveEntireMap(string(argv[4]));
 
-    cv::waitKey(0);
+    cv::waitKey(500);
     // Stop all threads
     SLAM.Shutdown();
     // Tracking time statistics

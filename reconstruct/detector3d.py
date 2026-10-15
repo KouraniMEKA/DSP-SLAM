@@ -81,21 +81,13 @@ class Detector3D(object):
         # << ak251007_PyTorch2
         # TODO: review and remove legacy MMLab V1 API support after full testing is complete.
         if IS_MMCV_V2:
-            # This function will automatically find and register all MMDetection3D components
-            # (models, backbones, etc.) into the MMEngine registry.      
-            # The 3D models often depend on components (like loss functions) from the 2D library.
-            # We must register both.
             from mmdet3d.utils import register_all_modules as register_all_modules_mmdet3d
             from mmdet.utils import register_all_modules as register_all_modules_mmdet
+            from mmengine.config import ConfigDict
             
-            # We establish 'mmdet3d' as the primary scope,
-            # then add the 'mmdet' components without overwriting that scope.
             register_all_modules_mmdet3d(init_default_scope=True)
             register_all_modules_mmdet(init_default_scope=False)
 
-            # The VoxelNet model uses 'FocalLoss', which is defined in `mmdet`.
-            # We must explicitly add `_scope_='mmdet'` to the loss configuration
-            # to tell the builder where to find this cross-library component.
             if 'bbox_head' in config.model:
                 if 'loss_cls' in config.model.bbox_head:
                     config.model.bbox_head.loss_cls['_scope_'] = 'mmdet'
@@ -104,21 +96,32 @@ class Detector3D(object):
                 if 'loss_dir' in config.model.bbox_head: 
                     config.model.bbox_head.loss_dir['_scope_'] = 'mmdet'
 
-            # MMLab V2+ models have different constructor arguments.
-            # We must remove the old, incompatible keys from the config dictionary.
             if 'pretrained' in config.model:
                 del config.model['pretrained']
-            if 'voxel_layer' in config.model: 
+            if 'voxel_layer' in config.model:
+                config.model.data_preprocessor = dict(
+                    type='Det3DDataPreprocessor',
+                    voxel=True,
+                    voxel_layer=config.model['voxel_layer']
+                )
                 del config.model['voxel_layer']
 
-            # Manually replicate the legacy initialization steps using the new API
-            # 1. Build the model
+            config.model.train_cfg = None
+
             self.model = MODELS.build(config.model)
 
-            # 2. Load the checkpoint
             if checkpoint is not None:
-                # The new load_checkpoint is from mmengine
                 load_checkpoint(self.model, checkpoint, map_location='cpu', revise_keys=[(r'^pts_', '')])
+
+            config.test_dataloader = ConfigDict(
+                dataset=ConfigDict(
+                    box_type_3d='LiDAR',
+                    pipeline=[
+                        dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=4, use_dim=4),
+                        dict(type='Pack3DDetInputs', keys=['points'])
+                    ]
+                )
+            )
 
         else:
             # Legacy MMLab V1 requires these keys to be explicitly set.

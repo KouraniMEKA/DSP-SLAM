@@ -89,13 +89,14 @@ class Detector2D(object):
             # This function will automatically find and register all MMDetection components
             # (models, backbones, etc.) into the MMEngine registry.      
             from mmdet.utils import register_all_modules
-            register_all_modules()
+            register_all_modules(init_default_scope=False)
 
             # MMLab V2+ models do not accept 'pretrained' argument.
             # We must remove it from the config dictionary before building the model.
             if 'pretrained' in self.config.model:
                 del self.config.model['pretrained']
             self.config.model.train_cfg = None
+            self.config.model['_scope_'] = 'mmdet'
 
             # Manually replicate the legacy initialization steps using the new API
             # 1. Build the model
@@ -105,16 +106,13 @@ class Detector2D(object):
             if checkpoint is not None:
                 load_checkpoint(self.model, checkpoint, map_location='cpu')
             
-            # In MMDetection v3.x, the data pipeline is defined in test_dataloader.
-            # The first step 'LoadImageFromFile' is for loading image from a path.
-            # Since we are passing an already-loaded image (np.ndarray), we replace
-            # it with a dummy transform that does nothing but ensures the pipeline
-            # starts correctly.
-            test_pipeline = self.config.test_dataloader.dataset.pipeline
-            # Replace 'LoadImageFromFile' with a dummy identity transform
-            if test_pipeline[0]['type'] == 'LoadImageFromFile':
-                test_pipeline = test_pipeline[1:]
-            self.pipeline = Compose(test_pipeline)
+            flat_pipeline = [
+                {'_scope_': 'mmdet', 'type': 'Resize', 'scale': (1333, 800), 'keep_ratio': True},
+                {'_scope_': 'mmdet', 'type': 'Normalize', 'mean': [123.675, 116.28, 103.53], 'std': [58.395, 57.12, 57.375], 'to_rgb': True},
+                {'_scope_': 'mmdet', 'type': 'Pad', 'size_divisor': 32},
+                {'_scope_': 'mmdet', 'type': 'PackDetInputs'}
+            ]
+            self.pipeline = Compose(flat_pipeline)
 
         else:
             # Legacy MMLab V1 requires these keys to be explicitly set.
@@ -158,8 +156,10 @@ class Detector2D(object):
             # 3. Collate data into a batch
             from mmengine.dataset import pseudo_collate
             data = pseudo_collate([data])
-            data['inputs'][0] = data['inputs'][0].to(self.device)
-            data['data_samples'][0] = data['data_samples'][0].to(self.device)
+            data['inputs'] = torch.stack(data['inputs']).to(self.device)
+            if 'data_samples' in data:
+                for i in range(len(data['data_samples'])):
+                    data['data_samples'][i] = data['data_samples'][i].to(self.device)
                       
             # 4. Perform inference
             with torch.no_grad():

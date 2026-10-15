@@ -4,7 +4,7 @@
 #
 conda_base=$(conda info --base)
 source "$conda_base/etc/profile.d/conda.sh"
-conda activate dsp-slam-pt2
+conda activate dsp-slam-yolo
 
 if [ ! -d build ]; then
   mkdir build

@@ -365,8 +365,8 @@ void System::Shutdown()
     }
 
 
-    if(mpViewer)
-        pangolin::BindToContext("ORB-SLAM2: Map Viewer");
+    // if(mpViewer)
+    //     pangolin::BindToContext("ORB-SLAM2: Map Viewer");
 
     PyGILState_Ensure();
 }
